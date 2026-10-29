@@ -1,0 +1,5 @@
+target/
+keys/
+.env
+keygen_1024.log
+work/
