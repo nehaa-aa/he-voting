@@ -50,6 +50,11 @@ export default function AdminPanel(props: {
   useEffect(() => {
     if (data.state === "Closed") submittedIndices().then(setSubmitted).catch(() => {});
   }, [data.state, data.partialCount]);
+  // Clear everything shown from a previous account when the wallet account changes.
+  useEffect(() => {
+    setBusy(undefined); setError(undefined); setTx(undefined); setNote(undefined);
+    setShareText(undefined); setFileKey((k) => k + 1);
+  }, [account]);
 
   if (!account) return null;
   const isOwner = data.owner.toLowerCase() === account.toLowerCase();
@@ -167,7 +172,7 @@ export default function AdminPanel(props: {
       {busy && <p>{busy}</p>}
       {note && <p className="muted">{note}</p>}
       {tx && <p>Transaction: <code>{tx}</code></p>}
-      {error && <div className="warn">{error}</div>}
+      {error && <div className="err">{error}</div>}
     </section>
   );
 }

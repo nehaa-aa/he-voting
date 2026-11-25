@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createWalletClient, custom, type Hex } from "viem";
 import { abi } from "./abi";
 import { CHAIN, CONTRACT, ELECTION_ID } from "./config";
@@ -10,10 +10,10 @@ type Status = "idle" | "encrypting" | "wallet" | "confirming" | "done" | "error"
 
 const LABEL: Record<Status, string> = {
   idle: "",
-  encrypting: "Encrypting and proving (in your browser)…",
-  wallet: "Waiting for wallet…",
-  confirming: "Confirming…",
-  done: "Vote recorded.",
+  encrypting: "Encrypting and proving in your browser…",
+  wallet: "Waiting for your wallet…",
+  confirming: "Confirming on the chain…",
+  done: "Your vote has been recorded.",
   error: "",
 };
 
@@ -31,9 +31,17 @@ export default function VotePanel(props: {
   const [ctPrefix, setCtPrefix] = useState<string>();
   const [ms, setMs] = useState<number>();
 
-  if (!account) return <section><h2>Vote</h2><p>Connect a wallet to vote.</p></section>;
-  if (!data.eligible) return <section><h2>Vote</h2><p>This address is not on the voter list.</p></section>;
-  if (data.state !== "Open") return <section><h2>Vote</h2><p>Voting is not open (state: {data.state}).</p></section>;
+  // A different wallet account must never see the previous account's ballot details.
+  useEffect(() => {
+    setChoice(undefined); setStatus("idle"); setMessage(undefined);
+    setTx(undefined); setCtPrefix(undefined); setMs(undefined);
+  }, [account]);
+
+  if (!account) return <section><h2>Vote</h2><p className="muted">Connect a wallet to vote.</p></section>;
+  if (!data.eligible) return <section><h2>Vote</h2><p className="muted">This address is not on the voter list.</p></section>;
+  if (data.state !== "Open") {
+    return <section><h2>Vote</h2><p className="muted">Voting is not open yet or has already closed.</p></section>;
+  }
 
   const busy = status === "encrypting" || status === "wallet" || status === "confirming";
 
@@ -77,18 +85,26 @@ export default function VotePanel(props: {
   return (
     <section>
       <h2>Vote</h2>
-      {data.voted && <div className="warn">You have already voted. A second attempt will be rejected.</div>}
-      <div className="row">
-        <label><input type="radio" name="c" checked={choice === 1} disabled={busy || wrongChain} onChange={() => setChoice(1)} /> Yes</label>
-        <label><input type="radio" name="c" checked={choice === 0} disabled={busy || wrongChain} onChange={() => setChoice(0)} /> No</label>
+      {data.voted && status === "idle" && (
+        <div className="warn">You have already voted. A second attempt will be rejected by the contract.</div>
+      )}
+      <div className="choices">
+        <label className="choice">
+          <input type="radio" name="c" checked={choice === 1} disabled={busy || wrongChain} onChange={() => setChoice(1)} />
+          Yes
+        </label>
+        <label className="choice">
+          <input type="radio" name="c" checked={choice === 0} disabled={busy || wrongChain} onChange={() => setChoice(0)} />
+          No
+        </label>
         <button onClick={submit} disabled={choice === undefined || busy || wrongChain}>Encrypt and submit</button>
       </div>
       <p className="muted">Your vote is encrypted on this device before it is sent.</p>
       {LABEL[status] && <p>{LABEL[status]}</p>}
-      {ms !== undefined && <p className="muted">Encrypt and prove took {ms} ms.</p>}
-      {ctPrefix && <p>Ciphertext starts with <code>{ctPrefix}</code></p>}
-      {tx && <p>Transaction: <code>{tx}</code></p>}
-      {status === "error" && message && <div className="warn">{message}</div>}
+      {ms !== undefined && <p className="muted">Encrypting and proving took {ms} ms.</p>}
+      {ctPrefix && <p>Ciphertext begins <code>{ctPrefix}</code></p>}
+      {tx && <p>Transaction <code>{tx}</code></p>}
+      {status === "error" && message && <div className="err">{message}</div>}
     </section>
   );
 }
