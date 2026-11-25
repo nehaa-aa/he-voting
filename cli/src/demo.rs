@@ -1,10 +1,11 @@
 use super::*;
 use crypto_core::orproof::prove;
 use crypto_core::paillier::{encrypt_unchecked, random_r};
+use crypto_core::threshold::lagrange_coefficients;
 use rand::{rngs::OsRng, RngCore};
 use std::time::Instant;
 
-// ---------- fixture schema (spec 6.2) ----------
+// ---------- fixture schema (spec 6.2 and 12.4) ----------
 
 #[derive(Serialize, Deserialize)]
 struct Committee {
@@ -26,6 +27,21 @@ struct InvalidBallotJson {
     reason: String,
     c: String,
     proof: ProofJson,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PartialEntry {
+    index: u32,
+    value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Reveal {
+    partials: Vec<PartialEntry>,
+    valid_subsets: Vec<Vec<u32>>,
+    total: u32,
+    bad_partial: PartialEntry,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,11 +69,19 @@ struct SquareVec {
 }
 
 #[derive(Serialize, Deserialize)]
+struct MulSmallVec {
+    x: String,
+    s: String,
+    out: String,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BigMathVectors {
     modexp: Vec<ModexpVec>,
     mulmod: Vec<MulmodVec>,
     exact_square: Vec<SquareVec>,
+    mul_small: Vec<MulSmallVec>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -71,6 +95,7 @@ struct ElectionFixture {
     invalid_ballots: Vec<InvalidBallotJson>,
     expected_tally: u32,
     expected_encrypted_tally: String,
+    reveal: Reveal,
     big_math_vectors: BigMathVectors,
 }
 
@@ -112,7 +137,40 @@ fn invalid_entry(pk: &PublicKey, reason: &str, ctx: &Context, b: &Ballot) -> Res
     Ok(InvalidBallotJson { voter: j.voter, reason: reason.to_string(), c: j.c, proof: j.proof })
 }
 
-fn build_vectors(pk: &PublicKey) -> Res<BigMathVectors> {
+fn all_subsets(members: u32, t: usize) -> Vec<Vec<u32>> {
+    fn rec(start: u32, members: u32, t: usize, cur: &mut Vec<u32>, out: &mut Vec<Vec<u32>>) {
+        if cur.len() == t {
+            out.push(cur.clone());
+            return;
+        }
+        for i in start..=members {
+            cur.push(i);
+            rec(i + 1, members, t, cur, out);
+            cur.pop();
+        }
+    }
+    let mut out = Vec::new();
+    rec(1, members, t, &mut Vec::new(), &mut out);
+    out
+}
+
+/// Combine the partials whose indices are in `subset` (partials[i-1] is member i).
+fn combine_subset(
+    pk: &PublicKey,
+    partials: &[Partial],
+    subset: &[u32],
+    members: u32,
+    threshold: u32,
+) -> Res<BigUint> {
+    let used: Vec<Partial> = subset.iter().map(|i| partials[(*i - 1) as usize].clone()).collect();
+    combine(pk, &used, members, threshold).map_err(|e| e.to_string())
+}
+
+fn has_negative_lambda(subsets: &[Vec<u32>], members: u32) -> bool {
+    subsets.iter().any(|s| lagrange_coefficients(s, members).iter().any(|l| *l < 0))
+}
+
+fn build_vectors(pk: &PublicKey, four_d2: u64) -> Res<BigMathVectors> {
     let k = pk.k_bytes();
     let nn = &pk.n2;
     let zero = BigUint::from(0u8);
@@ -174,7 +232,28 @@ fn build_vectors(pk: &PublicKey) -> Res<BigMathVectors> {
     sq(&rand_below(nn), 2 * k)?;
     sq(&nm1, 2 * k)?;
 
-    Ok(BigMathVectors { modexp, mulmod, exact_square })
+    // mulSmall: x * s, same width as x, s is a 32-byte value, the product must fit
+    let mut mul_small = Vec::new();
+    let mut ms = |x: &BigUint, xw: usize, s: &BigUint| -> Res<()> {
+        mul_small.push(MulSmallVec {
+            x: to_hex(x, xw)?,
+            s: to_hex(s, 32)?,
+            out: to_hex(&(x * s), xw)?,
+        });
+        Ok(())
+    };
+    let max256 = (BigUint::from(1u8) << 256usize) - &one;
+    ms(&pk.n, 2 * k, &BigUint::from(four_d2))?; // the finalizeTally shape: s * n, total 1
+    ms(&pk.n, 2 * k, &BigUint::from(four_d2 * 6))?; // total 6
+    ms(&pk.n, 2 * k, &zero)?; // s = 0
+    ms(&zero, 2 * k, &rand_bytes_value(32))?; // x = 0
+    ms(&one, 2 * k, &max256)?; // x = 1, s = 2^256 - 1
+    ms(&one, 2 * k, &zero)?;
+    ms(&nm1, 2 * k, &one)?; // x = N - 1, s = 1
+    ms(&rand_bytes_value(k), 2 * k, &rand_bytes_value(16))?;
+    ms(&rand_bytes_value(k - 1), k, &BigUint::from(255u8))?; // k-byte operand
+
+    Ok(BigMathVectors { modexp, mulmod, exact_square, mul_small })
 }
 
 // ---------- demo ----------
@@ -263,20 +342,57 @@ pub fn run_demo(voters_file: &Path, yes: u32, bits: usize, fresh: bool, out_dir:
     // 4. tally (verifies every ballot again, then multiplies)
     let t = tally(&pk, &|i: usize| ctxs[i].clone(), &ballots).map_err(|e| e.to_string())?;
 
-    // 5. 3-of-5 decryption of the TALLY only (members 1, 2, 5: negative lambda)
+    // 5. threshold decryption of the TALLY only: all five partials, every 3-member subset
     let shares = deal_shares(&pk, &dk, members, threshold);
-    let partials: Vec<Partial> = [1u32, 2, 5]
-        .iter()
-        .map(|i| partial_decrypt(&pk, &shares[(*i - 1) as usize], &t))
-        .collect();
-    let total = combine(&pk, &partials, members, threshold).map_err(|e| e.to_string())?;
-    if total != BigUint::from(yes) {
-        return Err(format!("WRONG TOTAL: got {total}, expected {yes}"));
+    let partials: Vec<Partial> = shares.iter().map(|s| partial_decrypt(&pk, s, &t)).collect();
+    let subsets = all_subsets(members, threshold as usize);
+    for s in &subsets {
+        let got = combine_subset(&pk, &partials, s, members, threshold)?;
+        if got != BigUint::from(yes) {
+            return Err(format!("subset {s:?} gave {got}, expected {yes}"));
+        }
     }
-    println!("3-of-5 decryption (members 1, 2, 5) of the tally: total = {total}");
+    if !has_negative_lambda(&subsets, members) {
+        return Err("no subset with a negative Lagrange coefficient".to_string());
+    }
+    println!(
+        "3-of-5 decryption of the tally: all {} three-member subsets give total = {yes} (e.g. members 1, 2, 5 use a negative lambda)",
+        subsets.len()
+    );
     println!("no individual ballot was decrypted");
 
+    // 5b. a bad partial: member 2's partial with one bit of its last byte flipped
+    let mut bad_bytes = bigint_to_bytes(&partials[1].value, 2 * k)
+        .ok_or_else(|| "partial does not fit its width".to_string())?;
+    let last = bad_bytes.len() - 1;
+    bad_bytes[last] ^= 1;
+    let bad_value = BigUint::from_bytes_be(&bad_bytes);
+    if bad_value == BigUint::from(0u8) || bad_value >= pk.n2 {
+        return Err("altered partial left the valid range".to_string());
+    }
+    let bad = Partial { index: 2, value: bad_value };
+    let mixed = vec![partials[0].clone(), bad.clone(), partials[2].clone()];
+    if let Ok(v) = combine(&pk, &mixed, members, threshold) {
+        if v == BigUint::from(yes) {
+            return Err("the bad partial still decrypted to the right total".to_string());
+        }
+    }
+    println!("a bad partial from member 2 does not recover the total");
+
+    let reveal = Reveal {
+        partials: partials
+            .iter()
+            .map(|p| -> Res<PartialEntry> {
+                Ok(PartialEntry { index: p.index, value: to_hex(&p.value, 2 * k)? })
+            })
+            .collect::<Res<Vec<_>>>()?,
+        valid_subsets: subsets,
+        total: yes,
+        bad_partial: PartialEntry { index: bad.index, value: to_hex(&bad.value, 2 * k)? },
+    };
+
     // 6. write the fixture and re-verify it from disk
+    let delta: u64 = (1..=members as u64).product();
     let fx = ElectionFixture {
         key_bits: pk.key_bits,
         n: to_hex(&pk.n, k)?,
@@ -286,7 +402,8 @@ pub fn run_demo(voters_file: &Path, yes: u32, bits: usize, fresh: bool, out_dir:
         invalid_ballots: invalid,
         expected_tally: yes,
         expected_encrypted_tally: to_hex(&t, 2 * k)?,
-        big_math_vectors: build_vectors(&pk)?,
+        reveal,
+        big_math_vectors: build_vectors(&pk, 4 * delta * delta)?,
     };
     let path = out_dir.join(format!("election_{bits}.json"));
     write_json(&path, &fx)?;
@@ -306,6 +423,7 @@ pub fn verify_fixture(path: &Path) -> Res<()> {
         return Err("n does not have exactly keyBits bits".to_string());
     }
     let eid = array_fixed::<32>(&fx.election_id)?;
+    let (members, threshold) = (fx.committee.members, fx.committee.threshold);
 
     let mut ctxs = Vec::new();
     let mut ballots = Vec::new();
@@ -338,6 +456,57 @@ pub fn verify_fixture(path: &Path) -> Res<()> {
         return Err("expectedEncryptedTally does not match the recomputed tally".to_string());
     }
 
+    // reveal block: every listed subset recovers the total, the bad partial does not
+    let rv = &fx.reveal;
+    if rv.total != fx.expected_tally {
+        return Err("reveal.total differs from expectedTally".to_string());
+    }
+    if rv.partials.len() != members as usize {
+        return Err("reveal.partials must hold one partial per member".to_string());
+    }
+    let mut partials = Vec::new();
+    for (i, p) in rv.partials.iter().enumerate() {
+        if p.index != i as u32 + 1 {
+            return Err("reveal.partials must be ordered by index 1..members".to_string());
+        }
+        partials.push(Partial { index: p.index, value: big_fixed(&p.value, 2 * k)? });
+    }
+    for s in &rv.valid_subsets {
+        let ordered = s.windows(2).all(|w| w[0] < w[1]);
+        if s.len() != threshold as usize || !ordered || s.iter().any(|i| *i < 1 || *i > members) {
+            return Err(format!("validSubsets entry {s:?} is not a strictly increasing subset"));
+        }
+        let got = combine_subset(&pk, &partials, s, members, threshold)?;
+        if got != BigUint::from(rv.total) {
+            return Err(format!("subset {s:?} gave {got}, expected {}", rv.total));
+        }
+    }
+    if !has_negative_lambda(&rv.valid_subsets, members) {
+        return Err("validSubsets has no subset with a negative lambda".to_string());
+    }
+    let bad = Partial {
+        index: rv.bad_partial.index,
+        value: big_fixed(&rv.bad_partial.value, 2 * k)?,
+    };
+    if bad.index < 1 || bad.index > members || bad.value == partials[(bad.index - 1) as usize].value {
+        return Err("badPartial must differ from the real partial of the same member".to_string());
+    }
+    let with_bad = rv
+        .valid_subsets
+        .iter()
+        .find(|s| s.contains(&bad.index))
+        .ok_or_else(|| "no validSubsets entry contains the badPartial member".to_string())?;
+    let used: Vec<Partial> = with_bad
+        .iter()
+        .map(|i| if *i == bad.index { bad.clone() } else { partials[(*i - 1) as usize].clone() })
+        .collect();
+    if let Ok(v) = combine(&pk, &used, members, threshold) {
+        if v == BigUint::from(rv.total) {
+            return Err("badPartial still recovers the right total".to_string());
+        }
+    }
+
+    // BigMath vectors
     let vs = &fx.big_math_vectors;
     for (i, v) in vs.modexp.iter().enumerate() {
         let (b, e, m, o) = (big_any(&v.base)?, big_any(&v.exp)?, big_any(&v.modulus)?, big_any(&v.out)?);
@@ -357,15 +526,24 @@ pub fn verify_fixture(path: &Path) -> Res<()> {
             return Err(format!("exactSquare vector {i} is wrong"));
         }
     }
+    for (i, v) in vs.mul_small.iter().enumerate() {
+        let (x, s, o) = (big_any(&v.x)?, big_any(&v.s)?, big_any(&v.out)?);
+        if &x * &s != o || v.out.len() != v.x.len() || v.s.len() != 66 {
+            return Err(format!("mulSmall vector {i} is wrong"));
+        }
+    }
 
     println!(
-        "fixture OK ({}): {} valid ballots accepted, {} invalid rejected, encrypted tally matches, {} modexp + {} mulmod + {} exactSquare vectors verified",
+        "fixture OK ({}): {} valid ballots accepted, {} invalid rejected, encrypted tally matches, {} subsets recover total {}, bad partial fails, {} modexp + {} mulmod + {} exactSquare + {} mulSmall vectors verified",
         path.display(),
         fx.valid_ballots.len(),
         fx.invalid_ballots.len(),
+        rv.valid_subsets.len(),
+        rv.total,
         vs.modexp.len(),
         vs.mulmod.len(),
-        vs.exact_square.len()
+        vs.exact_square.len(),
+        vs.mul_small.len()
     );
     Ok(())
 }

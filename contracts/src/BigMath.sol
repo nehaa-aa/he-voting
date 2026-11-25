@@ -154,4 +154,47 @@ library BigMath {
         bytes memory twoAB = sub(sub(s2, exactSquare(pa)), exactSquare(pb));
         return modexp(shr1(twoAB), hex"01", N);
     }
+
+        // ---------- small multiplier and increment (Phase 2) ----------
+    /// Exact x * s with the same width as x. Reverts with Overflow if it does not fit.
+    function mulSmall(bytes memory x, uint256 s) internal pure returns (bytes memory r) {
+        if (x.length == 0 || x.length % 32 != 0) revert BadLength();
+        uint256 n = x.length / 32;
+        r = new bytes(x.length);
+        uint256 carry = 0;
+        for (uint256 i = n; i > 0; i--) {
+            uint256 a = _get(x, i - 1);
+            unchecked {
+                // full 512-bit product of a * s as (hi, lo)
+                uint256 lo = a * s;
+                uint256 mm = mulmod(a, s, type(uint256).max);
+                uint256 hi = mm - lo - (mm < lo ? 1 : 0);
+                // add the carry from the lower word
+                uint256 sum = lo + carry;
+                if (sum < lo) hi += 1;
+                _set(r, i - 1, sum);
+                carry = hi;
+            }
+        }
+        if (carry != 0) revert Overflow();
+    }
+
+    /// x + 1 with the same width as x. Reverts with Overflow if x is all ones.
+    function increment(bytes memory x) internal pure returns (bytes memory r) {
+        if (x.length == 0 || x.length % 32 != 0) revert BadLength();
+        uint256 n = x.length / 32;
+        r = new bytes(x.length);
+        bool carry = true;
+        for (uint256 i = n; i > 0; i--) {
+            uint256 v = _get(x, i - 1);
+            if (carry) {
+                unchecked {
+                    v += 1;
+                }
+                carry = (v == 0);
+            }
+            _set(r, i - 1, v);
+        }
+        if (carry) revert Overflow();
+    }
 }

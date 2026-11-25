@@ -248,6 +248,7 @@ enum Cmd {
         out: PathBuf,
     },
     /// Combine partial decryptions into the plaintext total.
+        /// Combine partial decryptions into the plaintext total.
     Combine {
         #[arg(long)]
         pk: PathBuf,
@@ -257,6 +258,9 @@ enum Cmd {
         members: u32,
         #[arg(long)]
         threshold: u32,
+        /// Print {"indices": [...], "total": N} instead of just the total.
+        #[arg(long)]
+        json: bool,
     },
         /// Run a whole election, assert the result, write <out-dir>/election_<bits>.json
     Demo {
@@ -407,7 +411,7 @@ fn cmd_partial_decrypt(pk: &Path, share: &Path, tally_path: &Path, out: &Path) -
     Ok(())
 }
 
-fn cmd_combine(pk: &Path, partial_files: &[PathBuf], members: u32, threshold: u32) -> Res<()> {
+fn cmd_combine(pk: &Path, partial_files: &[PathBuf], members: u32, threshold: u32, json: bool) -> Res<()> {
     let pk = load_pk(pk)?;
     let k = pk.k_bytes();
     let mut partials = Vec::new();
@@ -416,7 +420,16 @@ fn cmd_combine(pk: &Path, partial_files: &[PathBuf], members: u32, threshold: u3
         partials.push(Partial { index: j.index, value: big_fixed(&j.value, 2 * k)? });
     }
     let total = combine(&pk, &partials, members, threshold).map_err(|e| e.to_string())?;
-    println!("{total}");
+    if json {
+        // the indices of the partials actually used (the first `threshold`), ascending,
+        // which is the order the contract's finalizeTally requires
+        let mut idx: Vec<u32> = partials.iter().take(threshold as usize).map(|p| p.index).collect();
+        idx.sort();
+        let list = idx.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        println!("{{\"indices\": [{}], \"total\": {}}}", list, total);
+    } else {
+        println!("{total}");
+    }
     Ok(())
 }
 
@@ -437,8 +450,8 @@ fn run(cmd: Cmd) -> Res<ExitCode> {
         Cmd::PartialDecrypt { pk, share, tally, out } => {
             cmd_partial_decrypt(&pk, &share, &tally, &out)?
         }
-        Cmd::Combine { pk, partials, members, threshold } => {
-            cmd_combine(&pk, &partials, members, threshold)?
+                Cmd::Combine { pk, partials, members, threshold, json } => {
+            cmd_combine(&pk, &partials, members, threshold, json)?
         }
         Cmd::Demo { voters_file, yes, bits, out_dir, fresh } => {
             demo::run_demo(&voters_file, yes, bits, fresh, &out_dir)?
