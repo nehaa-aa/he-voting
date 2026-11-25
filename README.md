@@ -115,3 +115,8 @@ Use `BITS=512` and `--bits 512` for the 512-bit run.
   fresh contract on every run.
 - The negative and replay tests run in forge's EVM, not against Anvil.
 - Anvil is run with `--hardfork cancun`, matching `evm_version = "cancun"` in foundry.toml.
+- The `getrandom` `js` feature is enabled in crypto-core under
+  `cfg(target_arch = "wasm32")`, not only in the wasm crate, so that
+  `cargo build -p crypto-core --target wasm32-unknown-unknown` (the Step 1 checkpoint)
+  succeeds on its own. Native builds are unaffected.
+- `keygen` is a default cargo feature; the WASM build uses `--no-default-features`.

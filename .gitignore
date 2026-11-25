@@ -8,3 +8,6 @@ cache/
 broadcast/
 contracts/gas_512.txt
 contracts/gas_1024.txt
+wasm/pkg/
+wasm/pkg-node/
+node_modules/

@@ -2,9 +2,10 @@ use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Zero};
 use rand08::{rngs::OsRng, RngCore};
-use std::path::Path;
-
+#[cfg(feature = "keygen")]
 use crate::keygen;
+#[cfg(feature = "keygen")]
+use std::path::Path;
 
 #[derive(Clone, Debug)]
 pub struct PublicKey {
@@ -92,12 +93,14 @@ pub fn random_r(pk: &PublicKey) -> BigUint {
 }
 
 /// Spec 4.3: generate a key from safe primes.
+#[cfg(feature = "keygen")]
 pub fn generate_safe_key(bits: usize) -> (PublicKey, DealerKey) {
     let (p, q, n) = keygen::generate_safe_key(bits);
     (PublicKey::new(n), DealerKey::from_primes(&p, &q))
 }
 
 /// Load a cached TEST key (fixtures/dev_key_*.json).
+#[cfg(feature = "keygen")]
 pub fn load_cached_key(path: impl AsRef<Path>) -> Result<(PublicKey, DealerKey), String> {
     let (bits, p, q, n) = keygen::load_dev_key(path)?;
     let pk = PublicKey::new(n);
