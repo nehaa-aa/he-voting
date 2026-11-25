@@ -28,7 +28,7 @@ impl PublicKey {
 
 /// Secret material. Deliberately NOT Debug, Clone or Serialize, so it
 /// cannot be logged or written out by accident.
-#[allow(dead_code)]
+#[allow(dead_code)]     
 pub struct DealerKey {
     pub(crate) p: BigUint,
     pub(crate) q: BigUint,

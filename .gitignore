@@ -3,3 +3,8 @@ keys/
 .env
 keygen_1024.log
 work/
+out/
+cache/
+broadcast/
+contracts/gas_512.txt
+contracts/gas_1024.txt
