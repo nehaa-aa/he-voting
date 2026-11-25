@@ -47,7 +47,7 @@ $H combine --pk work/keys/public.json --partials work/partial_1.json work/partia
 - demo, cached key: 512-bit 58.71 ms, 1024-bit 303.89 ms
 - cargo test --release: 44 passed, 0 failed
 
-## Assumptions (where the spec is silent or I chose)
+## Assumptions
 - Development on WSL2 Ubuntu. Native Windows Smart App Control blocked the
   Rust test binaries (Smart App Control was not disabled).
 - Election id is 1 (32-byte big-endian). The contract must use ids starting at 1.
@@ -91,7 +91,7 @@ $H combine --pk work/chain/keys/public.json --partials work/chain/partial_1.json
 ```
 Use `BITS=512` and `--bits 512` for the 512-bit run.
 
-## Results (my own runs; details in contracts/GAS.md)
+## Results (details in contracts/GAS.md)
 - forge: 46 tests pass at 512 and 1024 bits.
 - castVote, average of 10: 426,431 gas (512-bit), 1,266,388 gas (1024-bit).
 - The on-chain tally is byte-equal to expectedEncryptedTally; 3-of-5 decryption prints 6.
@@ -120,3 +120,71 @@ Use `BITS=512` and `--bits 512` for the 512-bit run.
   `cargo build -p crypto-core --target wasm32-unknown-unknown` (the Step 1 checkpoint)
   succeeds on its own. Native builds are unaffected.
 - `keygen` is a default cargo feature; the WASM build uses `--no-default-features`.
+
+# Phase 2
+## Assumptions
+- The crate is named he-wasm, so wasm-pack produces the package name he-wasm that web/package.json expects later.
+- encrypt_ballot takes n as 64, 128 or 256 bytes of hex (the sizes the contract accepts), electionId as exactly 32 bytes and voter as exactly 20 bytes. Error messages never contain the vote.
+- wasm-opt is disabled in the wasm-pack profile, because its download from GitHub is a common failure point. Remove that setting later if you want a smaller .wasm.
+- validSubsets holds all 10 three-member subsets, not just the three example ones. The spec only requires that it include one with a negative lambda, and 10 gives the contract tests stronger coverage.
+- mulSmall(x, s) returns a result of the same width as x and reverts if it doesn't fit. Each vector is {x, s, out} with s as a 32-byte hex value. The increment helper has no fixture list in 12.4, so Step 4 tests it with hand-made cases.
+- badPartial is member 2's real partial with the lowest bit of its last byte flipped.
+- The demo deals one set of shares per run, and the fixture's partials come from that dealing. Shares from a different keygen run can't be mixed with them.
+- Errors. Wrong-length setCommittee → BadLength. Duplicate or zero-address members → OutOfRange. total > ballotCount → WrongTotal. Finalizing before close, or twice → WrongState.
+- Check order in finalizeTally: state, committee set, indices (BadIndices), submitted (NotEnoughPartials), total range, then the equation.
+- Committee size is capped at 20 (MAX_COMMITTEE), enforced in setCommittee. Beyond that, Δ = l! and the Lagrange products overflow, and I'd rather fail early than at finalize time.
+- setCommittee can be called again while the state is Setup or Open, and it replaces the old committee.
+- Extra public constant MAX_COMMITTEE (not in 12.3).
+
+- The Results panel shows a locked state and a per-member signature list until `threshold` partials are
+  submitted. The lock is enforced by the contract (finalizeTally needs `threshold` submitted partials);
+  the UI only displays it.
+## Step 5 and 6: on-chain reveal and committee scripts
+Run (Anvil: `anvil --accounts 20 --hardfork cancun` in another terminal):
+​```bash
+export CARGO_TARGET_DIR="$HOME/he-voting-target"
+chmod +x scripts/*.sh
+(cd contracts && forge test)
+BITS=512 scripts/e2e_anvil.sh
+BITS=1024 scripts/e2e_anvil.sh
+​```
+Measured: forge test 76 passed, 0 failed (20 in RevealTest).
+
+Assumptions:
+- RunElection.s.sol now also calls setCommittee with fixtures/committee.json (Anvil accounts 11 to 15) and writes the contract address to fixtures/onchain_address.txt.
+- e2e_anvil.sh runs on the Anvil that is already running, not a new one. RunElection deploys a fresh contract each run.
+- Members 1, 2 and 5 submit partials (this subset has a negative Lagrange coefficient). Account 19 calls finalizeTally.
+- Member and finalizer keys are derived from the public Anvil mnemonic inside the script and never written to disk.
+- *.sh files use LF line endings (.gitattributes).
+
+## Step 6 results
+- `BITS=512 scripts/e2e_anvil.sh` and `BITS=1024 scripts/e2e_anvil.sh` both print
+  `E2E PASSED: on-chain total = 6`. getResult shows finalized, total 6, partialCount 3.
+- finalizeTally: 293,010 gas (512-bit), 445,775 gas (1024-bit) on Anvil (cancun).
+- submitPartial: 183,879 to 200,967 gas (512-bit), 283,303 to 300,415 gas (1024-bit).
+- forge test: 76 passed, 0 failed.
+
+## Step 7: frontend skeleton
+Run: `BITS=1024 scripts/deploy_open.sh` (deploys an open, empty election on Anvil and writes
+web/.env.local), then `cd web && npm run dev` and open http://localhost:5173.
+Assumptions:
+- Added two view functions to HEVoting, `isEligible(id, who)` and `hasVoted(id, who)`, because the
+  spec's interface has no way to read eligibility. Nothing else in the contract changed.
+- `DeployOpen.s.sol` creates election 1 with no votes, so the browser and CLI can both vote later.
+- web/.env.local is git-ignored. Restart the dev server after changing it.
+- The `he-wasm` dependency is added in Step 8, after `wasm-pack build wasm --target web --release`.
+- Sepolia is not supported in the frontend config; chain id 31337 (Anvil) only.
+
+## Step 8: vote panel
+Run: `wasm-pack build wasm --target web --release`, then in web/: `npm install --install-links ../wasm/pkg`,
+`BITS=1024 scripts/deploy_open.sh`, `npm run dev`.
+Assumptions:
+- encrypt_ballot runs in a Web Worker (web/src/ballotWorker.ts) from the start, not only if the page freezes.
+- The WASM package is installed with --install-links (a copy, not a symlink) because symlinks are unreliable
+  on /mnt/d. Rerun the npm install after rebuilding the WASM.
+- Encrypting and proving is one WASM call, so the progress shows "Encrypting and proving" as one stage,
+  then Waiting for wallet, then Confirming.
+- The vote panel stays visible for an eligible voter who already voted (spec 12.6 hides it), so a second
+  attempt shows the readable AlreadyVoted message required by the Step 8 checkpoint.
+- Measured browser time (encrypt and prove, my own runs): 1024-bit ___ ms, 512-bit ___ ms.
+

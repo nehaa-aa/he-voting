@@ -25,6 +25,7 @@ contract RunElection is Script {
         vm.startBroadcast(ownerKey);
         HEVoting hv = new HEVoting();
         uint256 id = hv.createElection(vm.parseJsonBytes(json, ".n"), voters, 5, 3);
+        hv.setCommittee(id, _committee()); // Phase 2: members = accounts 11-15 from fixtures/committee.json
         hv.openVoting(id);
         vm.stopBroadcast();
         require(id == uint256(vm.parseJsonBytes32(json, ".electionId")), "election id differs from the fixture");
@@ -48,8 +49,13 @@ contract RunElection is Script {
             "../fixtures/onchain_tally.json",
             string.concat('{"tally":"', vm.toString(tally), '","ballotCount":', vm.toString(count), "}")
         );
+        vm.writeFile("../fixtures/onchain_address.txt", vm.toString(address(hv)));
         console.log("HEVoting deployed at", address(hv));
         console.log("ballots counted", count);
+    }
+
+    function _committee() private view returns (address[] memory) {
+        return vm.parseJsonAddressArray(vm.readFile("../fixtures/committee.json"), "$");
     }
 
     function _cast(HEVoting hv, uint256 id, string memory json, uint256 i, uint256 key) private {

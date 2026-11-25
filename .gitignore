@@ -11,3 +11,5 @@ contracts/gas_1024.txt
 wasm/pkg/
 wasm/pkg-node/
 node_modules/
+fixtures/onchain_address.txt
+web/dist/

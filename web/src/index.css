@@ -1,0 +1,16 @@
+body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1a1a1a; }
+main { max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+header, section { background: #fff; border: 1px solid #dde1e6; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+h1 { font-size: 1.3rem; margin: 0 0 .5rem; }
+h2 { font-size: 1.05rem; margin: 0 0 .5rem; }
+.row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.tag { background: #eef1f5; padding: .15rem .5rem; border-radius: 4px; font-size: .85rem; }
+.warn { background: #fff4e5; border: 1px solid #f0c27a; padding: .5rem .75rem; border-radius: 6px; margin-top: .6rem; }
+dl { display: grid; grid-template-columns: 9rem 1fr; gap: .35rem .75rem; margin: 0; }
+dt { color: #555; }
+dd { margin: 0; }
+.muted { opacity: .6; }
+button { cursor: pointer; padding: .3rem .7rem; }
+h3 { font-size: .95rem; margin: .8rem 0 .3rem; }
+.chip { background: #eef1f5; padding: .2rem .55rem; border-radius: 12px; font-size: .85rem; }
+.chip.done { background: #dff5e1; }

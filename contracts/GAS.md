@@ -78,3 +78,33 @@ single transaction: 1,860,821 for the deployment).
 These equal the forge `--gas-report` values (min, average and max of castVote at
 both key sizes), and one transaction was checked directly on Anvil with
 `cast receipt` (the first 512-bit castVote: 487,820).
+
+## Phase 2: reveal, real transactions on Anvil (Step 6)
+Anvil: `anvil --accounts 20 --hardfork cancun`. Gas used per receipt from `scripts/e2e_anvil.sh`
+(members 1, 2, 5 submit; account 19 finalizes). Committee size 5, threshold 3.
+
+| Transaction | 512-bit | 1024-bit |
+|---|---|---|
+| deploy (now includes the reveal code) | 2,877,641 | 2,877,641 |
+| createElection | 648,087 | 883,786 |
+| setCommittee (5 members) | 297,570 | 297,570 |
+| openVoting | 27,065 | 27,065 |
+| castVote, first ballot | 488,701 | 1,390,024 |
+| castVote, average of 10 | 426,541 | 1,266,634 |
+| castVote, range of the other 9 | 419,423 to 419,909 | 1,252,327 to 1,253,562 |
+| closeVoting | 40,972 | 50,712 |
+| submitPartial, first member | 200,967 | 300,415 |
+| submitPartial, later members | 183,879 and 183,891 | 283,303 and 283,303 |
+| finalizeTally (members 1, 2, 5) | 293,010 | 445,775 |
+| setup and voting (deploy to close, 15 txs) | 8,156,749 | 16,803,120 |
+
+finalizeTally in forge tests, all 10 subsets: 294,005 to 294,914 (512-bit) and
+446,680 to 450,308 (1024-bit). These match the Anvil values to within about 1k gas.
+
+Notes:
+- The first submitPartial costs about 17k to 18k (512-bit) or 17k (1024-bit) more than the
+  later ones, because the partialCount storage slot goes from zero to nonzero.
+- The deploy cost rose from 1,860,821 (Phase 1) to 2,877,641 because of the reveal functions.
+- The largest single transaction is the deployment at 2,877,641, far below the 16.7M cap.
+  The 1024-bit voting total is spread over 15 transactions.
+- These supersede the Step 9 "real transactions" table, which predates setCommittee.
